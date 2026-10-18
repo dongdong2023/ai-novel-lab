@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -483,6 +485,485 @@ def write_dataset(
                 json.dumps(
                     s, ensure_ascii=False
                 )
+                + "\n"
+            )
+
+    (out_dir / "metadata.json").write_text(
+        json.dumps(
+            stats, ensure_ascii=False, indent=2
+        ),
+        encoding="utf-8",
+    )
+
+    return samples_path
+
+
+# ======================================================================
+# 数据集 v2：Gemini 评审 P0-1 改进
+#
+# 诊断：原六类样本中 5 类是"百科问答"（qa_appearance/qa_relation/
+# character/plot/world），训出来的是"问答机器人"不是"写手"。
+# v2 废弃百科问答，新增 4 种写作样本生成器，全部样本带溯源字段。
+# ======================================================================
+
+
+#: 已废弃的 5 类百科问答（保留函数供回溯，但 build_dataset_v2 不再调用）
+DEPRECATED_QA_CATEGORIES = frozenset(
+    {
+        "qa_appearance",
+        "qa_relation",
+        "character",
+        "plot",
+        "world",
+    }
+)
+
+
+@dataclass
+class SceneBeatSpec:
+    """场景节拍规格：写作样本的结构化输入。
+
+    beat_type: 节拍类型（hook/escalation/payoff/cliffhanger）
+    location: 场景地点
+    characters: 出场人物
+    conflict: 冲突核心（一句话）
+    emotion: 情绪基调
+    pov: 视角人物
+    foreshadow: 埋的钩子/伏笔
+    """
+
+    beat_type: str = ""
+    location: str = ""
+    characters: list[str] = field(default_factory=list)
+    conflict: str = ""
+    emotion: str = ""
+    pov: str = ""
+    foreshadow: str = ""
+    source_chapter: str = ""
+
+    def to_prompt(self) -> str:
+        lines = [f"【节拍类型】{self.beat_type or '未指定'}"]
+        if self.location:
+            lines.append(f"【地点】{self.location}")
+        if self.characters:
+            lines.append(
+                "【人物】" + "、".join(self.characters)
+            )
+        if self.pov:
+            lines.append(f"【视角】{self.pov}")
+        if self.conflict:
+            lines.append(f"【冲突】{self.conflict}")
+        if self.emotion:
+            lines.append(f"【情绪】{self.emotion}")
+        if self.foreshadow:
+            lines.append(f"【伏笔】{self.foreshadow}")
+        return "\n".join(lines)
+
+
+#: 回译增强系统提示：把原文段落改写成"节拍规格→正文"的
+#: 逆向样本时用，保证改写不改变事实只改变表达。
+BACK_TRANSLATION_SYSTEM_PROMPT = """你是网文写作样本增强助手。你的任务是把一段小说正文，
+逆向还原成"场景节拍规格"（SceneBeatSpec）。
+
+规则：
+1. 只提取事实性节拍信息（地点/人物/冲突/情绪/伏笔），不许编造原文没有的内容
+2. 输出严格使用以下字段，每行一个：
+   【节拍类型】hook/escalation/payoff/cliffhanger 四选一
+   【地点】场景发生的地点
+   【人物】出场人物，用顿号分隔
+   【视角】视角人物
+   【冲突】本段的核心冲突，一句话
+   【情绪】情绪基调，如"紧张""压抑""暗爽"
+   【伏笔】本段埋下的钩子，没有则留空
+3. 不要输出正文复述，不要加解释"""
+
+
+def _sha256(text: str) -> str:
+    return hashlib.sha256(
+        text.encode("utf-8")
+    ).hexdigest()
+
+
+def _provenance(
+    doc: dict, text: str
+) -> dict:
+    """溯源字段：每个样本必须携带。"""
+    return {
+        "source_doc_id": doc.get("id"),
+        "source_doc": doc.get("title", ""),
+        "rights_status": doc.get("rights", "unknown"),
+        "text_sha256": _sha256(text),
+    }
+
+
+def _mark_deprecated(sample: dict) -> dict:
+    """给废弃问答样本打标（保留可追溯，不再进入 v2 训练）。"""
+    sample["deprecated"] = True
+    sample["deprecated_reason"] = (
+        "百科问答已废弃：训出的是问答机器人而非写手"
+        "（Gemini 评审 P0-1，数据集 v2）"
+    )
+    return sample
+
+
+# ---------- 4 种写作样本生成器 ----------
+
+
+def samples_beat_to_prose(
+    docs: list[dict],
+    knowledge: list[dict],
+    *,
+    max_samples: int = 200,
+) -> list[dict]:
+    """G1 节拍→正文：input=场景节拍规格，output=原文段落。
+
+    模型学的是"给定节拍如何展开成文"，这是写手的核心能力。
+    节拍规格从事件知识确定性拼装（地点/人物/冲突来自
+    event/world_rule/character 知识条目）。
+    """
+
+    # 按章节聚合事件
+    events_by_doc: dict[str, list[dict]] = {}
+    for item in knowledge:
+        if item["_kind"] != "event":
+            continue
+        events_by_doc.setdefault(
+            item["_doc"], []
+        ).append(item)
+
+    samples = []
+    for doc in docs:
+        events = events_by_doc.get(doc["title"], [])
+        if not events:
+            continue
+        text = _read_doc(doc["raw_path"])
+        paragraphs = [
+            p.strip()
+            for p in text.split("\n\n")
+            if p.strip() and len(p.strip()) >= 80
+        ]
+        if not paragraphs:
+            continue
+
+        for i, ev in enumerate(events[:6]):
+            spec = SceneBeatSpec(
+                beat_type=(
+                    "hook" if i == 0
+                    else "payoff" if i == len(events) - 1
+                    else "escalation"
+                ),
+                characters=list(
+                    ev.get("participants") or []
+                )[:4],
+                conflict=ev.get("summary", ""),
+                pov=(
+                    (ev.get("participants") or [""])[0]
+                ),
+                foreshadow=ev.get("effect", ""),
+                source_chapter=doc["title"],
+            )
+            # 取原文中段一个段落作目标正文
+            target = paragraphs[
+                min(len(paragraphs) - 1, i * 2 + 1)
+            ]
+            prompt = (
+                "以下是《双月降临》的场景节拍规格，"
+                "请展开成一段小说正文（200-400字），"
+                "保持原文的克制白描文风：\n"
+                + spec.to_prompt()
+            )
+            sample = {
+                "category": "writing",
+                "subtype": "beat_to_prose",
+                "instruction": prompt,
+                "input": "",
+                "output": target,
+                **_provenance(doc, target),
+                "knowledge_id": ev.get("_id"),
+            }
+            samples.append(sample)
+            if len(samples) >= max_samples:
+                return samples
+
+    return samples
+
+
+def samples_continuation_v2(
+    docs: list[dict],
+    *,
+    min_input: int = 800,
+    max_output: int = 500,
+) -> list[dict]:
+    """G2 续写 v2：v1 的升级版。
+
+    改进点：input 末尾追加"下一段节拍提示"
+    （从后文第一句抽取冲突关键词），output 长度收紧，
+    每个样本带溯源三字段。
+    """
+
+    samples = []
+    for doc in docs:
+        text = _read_doc(doc["raw_path"])
+        paragraphs = [
+            p.strip()
+            for p in text.split("\n\n")
+            if p.strip()
+        ]
+        if len(paragraphs) < 8:
+            continue
+
+        # 找两个切点：1/3 处和 2/3 处
+        for frac in (0.33, 0.66):
+            cut = max(2, int(len(paragraphs) * frac))
+            inp_paras = paragraphs[:cut]
+            # input 凑到 min_input 字
+            acc = sum(len(p) for p in inp_paras)
+            if acc < min_input:
+                continue
+            out_paras = []
+            out_acc = 0
+            for p in paragraphs[cut:]:
+                out_paras.append(p)
+                out_acc += len(p)
+                if out_acc >= max_output:
+                    break
+            if not out_paras:
+                continue
+
+            # 节拍提示：从 output 首段抽冲突关键词
+            first = out_paras[0]
+            hint_bits = []
+            for kw in (
+                "突然", "却", "但是", "然而",
+                "竟", "竟然", "猛地", "死死",
+            ):
+                if kw in first:
+                    hint_bits.append(kw)
+            hint = (
+                "下一段情绪转折关键词："
+                + "、".join(hint_bits)
+                if hint_bits
+                else "下一段延续当前情绪推进"
+            )
+
+            inp_text = "\n\n".join(inp_paras)
+            out_text = "\n\n".join(out_paras)
+            sample = {
+                "category": "writing",
+                "subtype": "continuation_v2",
+                "instruction": (
+                    "以下是《双月降临》的正文片段，"
+                    "请以相同文风续写。\n" + hint
+                ),
+                "input": inp_text,
+                "output": out_text,
+                **_provenance(doc, out_text),
+                "knowledge_id": None,
+            }
+            samples.append(sample)
+
+    return samples
+
+
+def samples_cliffhanger_hook(
+    docs: list[dict],
+    *,
+    tail_chars: int = 600,
+) -> list[dict]:
+    """G3 断章钩子：input=章节末段，output=下一章开头钩子句。
+
+    训练模型"断章"能力：章末如何留悬念、章首如何接钩子。
+    """
+
+    samples = []
+    for doc in docs:
+        text = _read_doc(doc["raw_path"])
+        if len(text) < tail_chars + 200:
+            continue
+        # 章末 tail_chars 字作 input
+        tail = text[-tail_chars:]
+        # 找最后一个完整段落边界
+        cut = tail.find("\n\n")
+        if cut > 0:
+            tail = tail[cut:].strip()
+        # output：取文本最后 3 句作"钩子"
+        import re
+
+        sentences = re.split(
+            r"(?<=[。！？])", text[-tail_chars:]
+        )
+        sentences = [
+            s.strip() for s in sentences if s.strip()
+        ]
+        hook = "".join(sentences[-3:])
+        if len(hook) < 20:
+            continue
+
+        sample = {
+            "category": "writing",
+            "subtype": "cliffhanger_hook",
+            "instruction": (
+                "以下是《双月降临》某章结尾片段，"
+                "请写出下一章开头的钩子句"
+                "（1-3句，必须承接悬念、抛出新信息）："
+            ),
+            "input": tail,
+            "output": hook,
+            **_provenance(doc, hook),
+            "knowledge_id": None,
+        }
+        samples.append(sample)
+
+    return samples
+
+
+def samples_dialogue_tension(
+    docs: list[dict],
+    *,
+    max_samples: int = 150,
+) -> list[dict]:
+    """G4 对白张力：input=场景上下文+人物小传，
+    output=带潜台词的对白段落。
+
+    只选原文中引号密度高的段落作目标，保证
+    学到的是"对白"而非"叙述"。
+    """
+
+    import re
+
+    samples = []
+    for doc in docs:
+        text = _read_doc(doc["raw_path"])
+        paragraphs = [
+            p.strip()
+            for p in text.split("\n\n")
+            if p.strip()
+        ]
+        for i, p in enumerate(paragraphs):
+            if len(samples) >= max_samples:
+                return samples
+            # 引号密度：至少 2 对引号且对白占比超 40%
+            quotes = p.count("“")
+            if quotes < 2:
+                continue
+            dialogue_chars = sum(
+                len(m)
+                for m in re.findall(
+                    r"“[^”]*”", p
+                )
+            )
+            if dialogue_chars < len(p) * 0.4:
+                continue
+            # 上下文：前 2 段
+            context = "\n\n".join(
+                paragraphs[max(0, i - 2):i]
+            )
+            if len(context) < 100:
+                continue
+            sample = {
+                "category": "writing",
+                "subtype": "dialogue_tension",
+                "instruction": (
+                    "以下是《双月降临》的场景上下文，"
+                    "请写出一段人物对白：要求有潜台词、"
+                    "有信息差、短句为主，"
+                    "不许出现说教式长独白："
+                ),
+                "input": context,
+                "output": p,
+                **_provenance(doc, p),
+                "knowledge_id": None,
+            }
+            samples.append(sample)
+
+    return samples
+
+
+# ---------- v2 汇总 ----------
+
+
+def build_dataset_v2(
+    conn: sqlite3.Connection, novel_title: str
+) -> tuple[list[dict], dict]:
+    """数据集 v2：写作样本为主，百科问答全部废弃。
+
+    样本构成：
+      - beat_to_prose      节拍→正文
+      - continuation_v2    续写 v2（含节拍提示）
+      - cliffhanger_hook   断章钩子
+      - dialogue_tension   对白张力
+      - summary            章级总结（保留，非问答）
+    废弃的 5 类问答不再生成；如需回溯调用 build_dataset()
+    并检查 sample["deprecated"] 标记。
+    """
+
+    docs = trainable_documents(conn, novel_title)
+    knowledge = load_novel_knowledge(conn, novel_title)
+
+    samples: list[dict] = []
+    samples.extend(
+        samples_beat_to_prose(docs, knowledge)
+    )
+    samples.extend(samples_continuation_v2(docs))
+    samples.extend(samples_cliffhanger_hook(docs))
+    samples.extend(samples_dialogue_tension(docs))
+    # summary 保留：不是问答，是压缩能力
+    samples.extend(samples_summary(knowledge))
+
+    # v2 样本全部带溯源；补齐 summary 类的溯源字段
+    for s in samples:
+        s.setdefault("source_doc_id", None)
+        s.setdefault("rights_status", "unknown")
+        if "text_sha256" not in s:
+            s["text_sha256"] = _sha256(
+                s.get("output", "")
+            )
+
+    by_subtype: dict[str, int] = {}
+    for s in samples:
+        key = s.get("subtype", s["category"])
+        by_subtype[key] = by_subtype.get(key, 0) + 1
+
+    stats = {
+        "novel": novel_title,
+        "version": "v2",
+        "generated_at": _now(),
+        "trainable_docs": len(docs),
+        "knowledge_used": len(knowledge),
+        "total": len(samples),
+        "by_subtype": by_subtype,
+        "deprecated_qa_categories": sorted(
+            DEPRECATED_QA_CATEGORIES
+        ),
+        "rights_note": (
+            "仅从 authorized/user_provided/open_license "
+            "文档生成；每个样本带 source_doc_id / "
+            "rights_status / text_sha256 溯源"
+        ),
+    }
+
+    return samples, stats
+
+
+def write_dataset_v2(
+    samples: list[dict],
+    stats: dict,
+    out_dir: Path | None = None,
+) -> Path:
+    """写 v2 数据集到 data/datasets/v2/。"""
+
+    if out_dir is None:
+        out_dir = DATA_DIR / "datasets" / "v2"
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    samples_path = out_dir / "samples.jsonl"
+    with samples_path.open(
+        "w", encoding="utf-8"
+    ) as f:
+        for s in samples:
+            f.write(
+                json.dumps(s, ensure_ascii=False)
                 + "\n"
             )
 

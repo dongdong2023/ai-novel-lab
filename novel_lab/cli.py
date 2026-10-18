@@ -602,6 +602,14 @@ def main() -> None:
         "export-lf", help="导出 LLaMA-Factory 训练包"
     )
 
+    export_pack = sub.add_parser(
+        "export-pack",
+        help="导出 NovelPack（给 house-style Skill 用的知识包）",
+    )
+    export_pack.add_argument(
+        "--novel-title", required=True
+    )
+
     status = sub.add_parser(
         "status", help="P10：流水线全景状态"
     )
@@ -649,6 +657,12 @@ def main() -> None:
             f"[PASS] LLaMA-Factory 训练包: {info['counts']}"
         )
         print(info["out_dir"])
+    elif args.command == "export-pack":
+        from novel_lab.export_house_style import (
+            cmd_export_pack,
+        )
+
+        cmd_export_pack(args.novel_title)
     elif args.command == "status":
         from novel_lab.pipeline_status import (
             pipeline_status,

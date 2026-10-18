@@ -196,6 +196,26 @@ def extract_chapter_stats(
                 )
             )
 
+    # P0-2 叙事动力学：Hook/Escalation/Payoff/断章四维画像
+    try:
+        from novel_lab.understanding.narrative_dynamics import (
+            analyze_chapter,
+        )
+
+        profile = analyze_chapter(doc["title"], content)
+        items.append(
+            (
+                "narrative_dynamics",
+                {
+                    "chapter": doc["title"],
+                    **profile.to_dict(),
+                },
+                1.0,
+            )
+        )
+    except Exception:
+        pass
+
     return items
 
 

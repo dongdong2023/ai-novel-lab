@@ -165,7 +165,7 @@ class PlatformPopularityTest(unittest.TestCase):
                 r["popularity_score"], 0.0
             )
             self.assertLessEqual(
-                r["popularity_score"], 1.0
+                r["popularity_score"], 1.35  # v3: 四维评分×stage_multiplier上限1.35
             )
 
         # 起点书在 3 个板块出现，板块分量应给它加分

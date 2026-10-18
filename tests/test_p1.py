@@ -165,7 +165,7 @@ class PopularityTest(unittest.TestCase):
                 r["popularity_score"], 0.0
             )
             self.assertLessEqual(
-                r["popularity_score"], 1.0
+                r["popularity_score"], 1.35  # v3: 四维评分×stage_multiplier上限1.35
             )
             self.assertEqual(
                 r["source_count"], r["board_count"]
