@@ -314,6 +314,7 @@ def cmd_extract(config: dict, mock: bool, limit: int | None) -> None:
         f"[PASS] mode={mode} docs={stats['docs']} "
         f"knowledge={stats['knowledge']} "
         f"llm_items={stats['llm_items']} "
+        f"llm_failed={stats.get('llm_failed', 0)} "
         f"skipped_no_novel={stats['skipped_no_novel']}"
     )
     print(f"知识分布: {summary}")

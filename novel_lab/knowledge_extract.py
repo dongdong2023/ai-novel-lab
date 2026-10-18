@@ -211,9 +211,20 @@ def extract_chapter_llm(
         title=doc["title"],
         content=content,
     )
-    raw = client.chat(
-        EXTRACT_SYSTEM, user, purpose="extract_chapter"
-    )
+    from novel_lab.llm.client import LLMError
+
+    raw = None
+    for attempt in (1, 2):
+        try:
+            raw = client.chat(
+                EXTRACT_SYSTEM, user, purpose="extract_chapter"
+            )
+            break
+        except LLMError:
+            if attempt == 2:
+                return []
+    if raw is None:
+        return []
     data = extract_json(raw)
     if data is None:
         return []
@@ -311,35 +322,41 @@ def run_extract(
                 doc, content, character_dict
             )
 
-            llm_items = []
-            if use_llm and client is not None:
-                llm_items = extract_chapter_llm(
-                    doc, content_llm, client
-                )
-                stats["llm_items"] += len(llm_items)
-
-            written = write_knowledge(
+            # 确定性知识先落库：LLM 失败也不丢这部分
+            stats["knowledge"] += write_knowledge(
                 conn,
                 novel_rowid=doc["novel_rowid"],
                 document_id=doc["id"],
                 items=items,
                 extractor=STATS_EXTRACTOR,
                 version=STATS_EXTRACTOR,
-            ) + (
-                write_knowledge(
+            )
+
+            llm_items = []
+            if use_llm and client is not None:
+                try:
+                    llm_items = extract_chapter_llm(
+                        doc, content_llm, client
+                    )
+                    stats["llm_items"] += len(llm_items)
+                except Exception as exc:
+                    # 单章失败不拖垮整批，记录后继续
+                    stats["llm_failed"] = (
+                        stats.get("llm_failed", 0) + 1
+                    )
+                    print(
+                        f"[WARN] {doc['title']} LLM抽取失败: {exc}"
+                    )
+
+            if llm_items:
+                stats["knowledge"] += write_knowledge(
                     conn,
                     novel_rowid=doc["novel_rowid"],
                     document_id=doc["id"],
                     items=llm_items,
                     extractor="llm-v1",
-                    version=prompt_version(
-                        "extract_chapter"
-                    ),
+                    version=prompt_version("extract_chapter"),
                 )
-                if llm_items
-                else 0
-            )
-            stats["knowledge"] += written
 
     return stats
 

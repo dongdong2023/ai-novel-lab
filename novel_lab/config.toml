@@ -26,12 +26,15 @@ growth_weight = 0.15
 # 本地 sick-cloud 上的 Ollama（qwen3.8:27b-iq3s），经 SSH 隧道转发：
 #   ssh -N -L 11434:127.0.0.1:11434 sick-cloud
 # 用时开隧道 + enabled=true，用完关闭（2026-10-17 P5 LLM 抽取已验收）。
-# think:false 关思考模式（~40-90s/次），开着思考会超 120s 且塞爆串行队列。
+# think:false 关思考模式，开着思考会超 120s 且塞爆串行队列。
+# 2026-10-18：5080 被 vLLM 任务占用时 Ollama 仅剩 ~1GB 显存，27B 掉到
+# CPU 上爬（单章>10分钟且超时）。显存空闲时再 enabled=true 跑 extract；
+# 已成功章节靠回执复用不会重复推理。
 enabled = false
 base_url = "http://127.0.0.1:11434/v1"
 api_key = "local-ollama"
 model = "qwen3.8:27b-iq3s"
-timeout_seconds = 600
+timeout_seconds = 900
 extra_body = { think = false }
 per_minute_limit = 30
 per_hour_limit = 3000
