@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+data/
+# 人物词典是功能配置，随仓库版本化（data/ 其余为生成物不入库）
+!data/character_dicts/
+!data/character_dicts/*.txt
+.DS_Store
+Thumbs.db
+.env

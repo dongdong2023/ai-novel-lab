@@ -1,0 +1,25 @@
+你是网文研究系统的资料结构化器。对这份资料做文档级结构化（不做深度剧情分析）。
+
+输出一个 JSON 对象，字段如下：
+{{
+  "doc_kind": "book_profile 或 review 或 chapter_text 或 wiki 或 interview 或 discussion 或 other",
+  "about_novel": "资料针对的书名，看不出留空字符串",
+  "aspects": ["这份资料涉及的信息方面，如：题材、主角设定、卖点标签、热度数据、章节信息、连载状态"],
+  "facts": [
+    {{"subject": "谁或什么", "predicate": "是什么或做了什么", "object": "对象或数值", "source_quote": "资料原文里≤20字的短引用"}}
+  ],
+  "notes": "一句话备注"
+}}
+
+铁律：
+- facts 只能来自资料原文，每条必须带 source_quote，禁止推断和补全
+- 在读数、字数、月票、章节数这类数值也要抽成 facts
+- 资料是章节正文时，只抽文档级信息（章节标题、出场人物、时代背景），不要概括剧情细节
+- 抽不出就给空数组，不要编
+
+资料标题：{title}
+资料类型：{source_type}
+资料内容（截断）：
+{content}
+
+只输出一个 JSON 对象，不要输出其他文字。

@@ -1,0 +1,38 @@
+[lab]
+db_path = "data/novel_lab.db"
+
+[research]
+request_timeout = 15
+# 番茄 CDN 会拒绝非浏览器 UA，这里用真实浏览器串
+user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+
+[discovery]
+genders = ["男频", "女频"]
+rank_types = ["在读榜", "新书榜"]
+top_per_board = 10
+# 相邻请求间隔，对站点保持礼貌
+request_delay_seconds = 0.8
+# 起点m站4板块（月票/阅读指数/签约/书友）；起点PC站有JS挑战不绕，qdmm女生网被WAF拦暂不接
+qidian_enabled = true
+
+[popularity]
+board_weight = 0.15
+read_weight = 0.45
+rank_weight = 0.25
+# 快照 ≥2 期后启用；缺增长率的书该分量权重自动重归
+growth_weight = 0.15
+
+[llm]
+# 本地 sick-cloud 上的 Ollama（qwen3.8:27b-iq3s），经 SSH 隧道转发：
+#   ssh -N -L 11434:127.0.0.1:11434 sick-cloud
+# 用时开隧道 + enabled=true，用完关闭（2026-10-17 P5 LLM 抽取已验收）。
+# think:false 关思考模式（~40-90s/次），开着思考会超 120s 且塞爆串行队列。
+enabled = false
+base_url = "http://127.0.0.1:11434/v1"
+api_key = "local-ollama"
+model = "qwen3.8:27b-iq3s"
+timeout_seconds = 600
+extra_body = { think = false }
+per_minute_limit = 30
+per_hour_limit = 3000
+per_day_limit = 30000
