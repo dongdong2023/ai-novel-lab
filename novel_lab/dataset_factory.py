@@ -333,17 +333,51 @@ def samples_summary(knowledge: list[dict]) -> list[dict]:
 def samples_writing(
     docs: list[dict],
     *,
-    min_input: int = 500,
-    max_output: int = 600,
+    min_input: int = 400,
+    max_output: int = 500,
+    max_plain: int = 4,
+    max_dialogue: int = 8,
+    anchor_gap: int = 3,
 ) -> list[dict]:
-    """F 写作任务：自监督续写切片。
+    """F 写作任务：自监督续写切片（多切片版）。
 
-    每章两片：普通续写（段落边界切）+ 对白锚点续写
-    （从引号段起笔）。input=前文，output=原文后续段落，
-    模型学的是作者自己的文风——全部来自可训练 rights 的文本。
+    每章两类切片，全部来自可训练 rights 的文本：
+    - 普通滑窗：从头起不重叠推进（input≥min_input，output 收敛到
+      max_output），最多 max_plain 片；
+    - 对白锚点：正文中含引号的段落按 anchor_gap 间隔均匀取点，
+      output 从该对白段起笔，最多 max_dialogue 片。
+    段落级连续性由 P8 质检的切片连续校验兜底。
     """
 
     samples = []
+
+    def make(
+        doc_title: str,
+        cut: int,
+        end: int,
+        mode: str,
+        paragraphs: list[str],
+    ) -> dict:
+        inp = "\n\n".join(paragraphs[:cut])
+        out = "\n\n".join(paragraphs[cut:end])
+        return {
+            "category": "writing",
+            "subtype": mode,
+            "instruction": (
+                "以下是一部末世小说《双月降临》的片段，"
+                "请以相同文风续写。"
+                + (
+                    "下一段从人物对白开始。"
+                    if mode == "dialogue"
+                    else ""
+                )
+            ),
+            "input": inp,
+            "output": out,
+            "source_doc": doc_title,
+            "knowledge_id": None,
+        }
+
     for doc in docs:
         text = _read_doc(doc["raw_path"])
         paragraphs = [
@@ -354,66 +388,69 @@ def samples_writing(
         if len(paragraphs) < 6:
             continue
 
-        def make(
-            cut: int, end: int, mode: str
-        ) -> dict:
-            inp = "\n\n".join(paragraphs[:cut])
-            out = "\n\n".join(paragraphs[cut:end])
-            return {
-                "category": "writing",
-                "instruction": (
-                    "以下是一部末世小说《双月降临》的片段，"
-                    "请以相同文风续写。"
-                    + (
-                        "下一段从人物对白开始。"
-                        if mode == "dialogue"
-                        else ""
-                    )
-                ),
-                "input": inp,
-                "output": out,
-                "source_doc": doc["title"],
-                "knowledge_id": None,
-            }
-
-        # 普通切片：累计到 min_input 字附近找段落边界
-        acc = 0
-        cut = 1
-        for i, p in enumerate(paragraphs):
-            acc += len(p)
-            if acc >= min_input:
+        # ---- 普通滑窗 ----
+        start = 0
+        made = 0
+        while made < max_plain:
+            acc = 0
+            cut = start
+            for i in range(start, len(paragraphs)):
+                acc += len(paragraphs[i])
                 cut = i + 1
+                if acc >= min_input:
+                    break
+            if cut >= len(paragraphs):
                 break
-        out_acc = 0
-        end = cut
-        for i in range(cut, len(paragraphs)):
-            out_acc += len(paragraphs[i])
-            end = i + 1
-            if out_acc >= max_output:
-                break
-        if cut < end <= len(paragraphs):
-            samples.append(make(cut, end, "plain"))
-
-        # 对白锚点：找中段第一个含引号的段
-        mid = len(paragraphs) // 2
-        d_cut = None
-        for i in range(
-            max(cut + 1, mid - 3), min(len(paragraphs), mid + 5)
-        ):
-            if "“" in paragraphs[i]:
-                d_cut = i
-                break
-        if d_cut is not None:
             out_acc = 0
-            d_end = d_cut
-            for i in range(d_cut, len(paragraphs)):
+            end = cut
+            for i in range(cut, len(paragraphs)):
                 out_acc += len(paragraphs[i])
-                d_end = i + 1
+                end = i + 1
                 if out_acc >= max_output:
                     break
-            if d_end > d_cut:
+            if end <= cut or end - cut < 1:
+                break
+            samples.append(
+                make(doc["title"], cut, end, "plain", paragraphs)
+            )
+            made += 1
+            start = end
+
+        # ---- 对白锚点 ----
+        anchors = [
+            i
+            for i, p in enumerate(paragraphs)
+            if "“" in p and i > 0
+        ]
+        if anchors:
+            picked = []
+            last = -10 ** 9
+            step = max(1, len(anchors) // max_dialogue)
+            for i in anchors[::step]:
+                if i - last >= anchor_gap:
+                    picked.append(i)
+                    last = i
+                if len(picked) >= max_dialogue:
+                    break
+
+            for anchor in picked:
+                out_acc = 0
+                end = anchor
+                for i in range(anchor, len(paragraphs)):
+                    out_acc += len(paragraphs[i])
+                    end = i + 1
+                    if out_acc >= max_output:
+                        break
+                if end <= anchor:
+                    continue
                 samples.append(
-                    make(d_cut, d_end, "dialogue")
+                    make(
+                        doc["title"],
+                        anchor,
+                        end,
+                        "dialogue",
+                        paragraphs,
+                    )
                 )
 
     return samples
@@ -444,6 +481,7 @@ def build_dataset(
         samples.extend(part)
 
     samples.extend(samples_writing(docs))
+    samples.extend(samples_continuation_v2(docs))
 
     stats = {
         "novel": novel_title,
