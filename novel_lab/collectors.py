@@ -20,7 +20,12 @@ DEFAULT_USER_AGENT = (
 # 干净文本，没有榜单页那种字体反爬乱码。
 
 
-def _fetch(url: str, timeout: int, user_agent: str) -> str:
+def _fetch(
+    url: str, timeout: int, user_agent: str, client=None
+) -> str:
+    # 注入 PoliteClient 时统一走礼貌通道（robots/缓存/限流/退避）
+    if client is not None:
+        return client.get(url)
     response = requests.get(
         url,
         headers={
@@ -48,11 +53,13 @@ def fanqie_book_profile(
     *,
     timeout: int = 15,
     user_agent: str = DEFAULT_USER_AGENT,
+    client=None,
 ) -> dict:
     html = _fetch(
         f"https://fanqienovel.com/page/{book_id}",
         timeout,
         user_agent,
+        client=client,
     )
 
     match = re.search(
@@ -125,11 +132,13 @@ def qidian_book_profile(
     *,
     timeout: int = 15,
     user_agent: str = DEFAULT_USER_AGENT,
+    client=None,
 ) -> dict:
     html = _fetch(
         f"https://m.qidian.com/book/{book_id}/",
         timeout,
         user_agent,
+        client=client,
     )
 
     match = re.search(
@@ -211,13 +220,20 @@ def fetch_profile(
     *,
     timeout: int = 15,
     user_agent: str = DEFAULT_USER_AGENT,
+    client=None,
 ) -> dict:
     if platform == "fanqie":
         return fanqie_book_profile(
-            book_id, timeout=timeout, user_agent=user_agent
+            book_id,
+            timeout=timeout,
+            user_agent=user_agent,
+            client=client,
         )
     if platform == "qidian":
         return qidian_book_profile(
-            book_id, timeout=timeout, user_agent=user_agent
+            book_id,
+            timeout=timeout,
+            user_agent=user_agent,
+            client=client,
         )
     raise ValueError(f"未知平台: {platform}")

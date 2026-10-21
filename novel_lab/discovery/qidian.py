@@ -75,6 +75,7 @@ class QidianAdapter:
         board_name: str = "",
         timeout: int = 15,
         user_agent: str = DEFAULT_USER_AGENT,
+        client=None,
     ):
         self.slug = slug
         self.board_name = board_name or slug
@@ -85,8 +86,12 @@ class QidianAdapter:
             "Accept-Language": "zh-CN,zh;q=0.9",
         }
         self.board = f"qd_{slug}"
+        # 注入 PoliteClient 时抓取统一走礼貌通道；不注入保持直连
+        self.client = client
 
     def fetch(self) -> str:
+        if self.client is not None:
+            return self.client.get(self.url)
         response = requests.get(
             self.url,
             headers=self.headers,
@@ -183,6 +188,7 @@ def discover_qidian(
     timeout: int = 15,
     user_agent: str = DEFAULT_USER_AGENT,
     delay_seconds: float = 1.0,
+    client=None,
 ) -> tuple[list[NovelRecord], list[tuple[str, str]]]:
     """轮询起点m站全部已确认板块，返回 (records, errors)。"""
 
@@ -196,6 +202,7 @@ def discover_qidian(
             board_name=board["name"],
             timeout=timeout,
             user_agent=user_agent,
+            client=client,
         )
 
         try:

@@ -77,11 +77,16 @@ def write_knowledge(
     extractor: str,
     version: str,
 ) -> int:
-    """幂等写入：同 (document, extractor, version) 先删后插。"""
+    """幂等写入：同 (document, extractor, version) 先删后插。
+
+    删除时保护 human_verified=1 的人工修正记录（架构文档
+    不变规则：人工修正只增不删，自动流程永不覆盖）。
+    """
 
     conn.execute(
         "DELETE FROM knowledge WHERE document_id=? "
-        "AND extractor=? AND prompt_version=?",
+        "AND extractor=? AND prompt_version=? "
+        "AND human_verified = 0",
         (document_id, extractor, version),
     )
 
@@ -409,7 +414,10 @@ def character_totals(
         """
         SELECT json_extract(k.payload, '$.name') AS name,
                COUNT(DISTINCT k.document_id) AS chapters,
-               SUM(json_extract(k.payload, '$.mentions')) AS total
+               COALESCE(
+                   SUM(json_extract(k.payload, '$.mentions')),
+                   COUNT(*)
+               ) AS total
         FROM knowledge k
         JOIN novels n ON n.id = k.novel_rowid
         WHERE n.title = ? AND k.kind = 'character'

@@ -91,12 +91,19 @@ def ingest_document(
     published_at: str = "",
     content_hash: str = "",
     raw_path: str = "",
+    verify_text: str | None = None,
+    verify_dir: Path | None = None,
 ) -> tuple[int | None, str]:
     """三级判重入库：URL → 内容哈希 → 同书标题归一。
 
     返回 (doc_id, status)，status ∈
     {created, duplicate_url, duplicate_content, duplicate_title}。
     rights 不在白名单直接拒绝。
+
+    verify_text/verify_dir 同时给出时，先过版权三级验证
+    （rights_verify.verify_document），不通过抛 ValueError 拒绝
+    入库。本地目录入库（ingest_directory）强制走这条路径；
+    书页元数据等内部通道不传文本、维持原行为。
     """
 
     if rights not in ALLOWED_RIGHTS:
@@ -104,6 +111,21 @@ def ingest_document(
             f"未知 rights: {rights}，"
             f"允许值: {sorted(ALLOWED_RIGHTS)}"
         )
+
+    if verify_text is not None and verify_dir is not None:
+        from novel_lab.rights_verify import verify_document
+
+        result = verify_document(
+            verify_dir,
+            verify_text,
+            rights,
+            title_hint=title,
+        )
+        if not result.passed:
+            raise ValueError(
+                f"版权验证未通过(L{result.level_failed}): "
+                f"{result.reason}"
+            )
 
     row = conn.execute(
         "SELECT id FROM documents WHERE source_url=?",
@@ -203,6 +225,9 @@ def ingest_directory(
     """把一个目录的 txt/md 登记为文档（默认用户自有语料）。
 
     只登记元数据与哈希，不复制文件；raw_path 指向原文件。
+    入库前每份文档强制过版权三级验证（.rights.json 声明 +
+    盗版水印 + 商业书名交叉比对）；不通过的拒绝入库并记录在
+    返回值的 rejected/rejections 里。
     """
 
     if rights not in ALLOWED_RIGHTS:
@@ -214,7 +239,8 @@ def ingest_directory(
         else None
     )
 
-    stats = {"created": 0, "duplicates": 0}
+    stats = {"created": 0, "duplicates": 0,
+             "rejected": 0, "rejections": []}
 
     for path in sorted(
         directory.rglob("*")
@@ -226,16 +252,28 @@ def ingest_directory(
 
         text = _read_best(path)
 
-        _, status = ingest_document(
-            conn,
-            novel_rowid=target_novel,
-            source_url=path.resolve().as_uri(),
-            source_type=source_type,
-            rights=rights,
-            title=path.stem,
-            content_hash=sha256_text(text),
-            raw_path=str(path),
-        )
+        try:
+            _, status = ingest_document(
+                conn,
+                novel_rowid=target_novel,
+                source_url=path.resolve().as_uri(),
+                source_type=source_type,
+                rights=rights,
+                title=path.stem,
+                content_hash=sha256_text(text),
+                raw_path=str(path),
+                verify_text=text,
+                verify_dir=directory,
+            )
+        except ValueError as exc:
+            # 版权验证拒绝不是程序错误：记录原因跳过该文件
+            if "版权验证未通过" not in str(exc):
+                raise
+            stats["rejected"] += 1
+            stats["rejections"].append(
+                (path.stem, str(exc))
+            )
+            continue
 
         if status == "created":
             stats["created"] += 1

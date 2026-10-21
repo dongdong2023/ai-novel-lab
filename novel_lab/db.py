@@ -231,7 +231,10 @@ def candidate_rows(conn: sqlite3.Connection) -> list[dict]:
                MIN(o.rank) AS best_rank,
                COUNT(DISTINCT o.board) AS board_count,
                COUNT(o.id) AS observation_count,
-               MAX(o.observed_at) AS last_observed_at
+               MAX(o.observed_at) AS last_observed_at,
+               MAX(o.word_count) AS word_count,
+               GROUP_CONCAT(DISTINCT o.board) AS board,
+               GROUP_CONCAT(DISTINCT o.rank_type) AS rank_type
         FROM novels n
         JOIN observations o ON o.novel_rowid = n.id
         GROUP BY n.id

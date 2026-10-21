@@ -166,7 +166,7 @@ def export_llamafactory(
 ) -> dict:
 
     if dataset_dir is None:
-        dataset_dir = DATA_DIR / "datasets" / "v1"
+        dataset_dir = DATA_DIR / "datasets" / "v2"
     if out_dir is None:
         out_dir = DATA_DIR / "llama_factory"
 

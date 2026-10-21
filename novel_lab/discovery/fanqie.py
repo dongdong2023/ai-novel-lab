@@ -87,6 +87,7 @@ class FanqieAdapter:
         board_meta: dict | None = None,
         timeout: int = 15,
         user_agent: str = DEFAULT_USER_AGENT,
+        client=None,
     ):
         self.url = url
         self.timeout = timeout
@@ -99,8 +100,13 @@ class FanqieAdapter:
             self.board_meta.get("code")
             or url.rstrip("/").rsplit("/", 1)[-1]
         )
+        # 注入 PoliteClient 时抓取统一走礼貌通道
+        # （robots/缓存/限流/退避）；不注入保持直连。
+        self.client = client
 
     def fetch(self) -> str:
+        if self.client is not None:
+            return self.client.get(self.url)
         response = requests.get(
             self.url,
             headers=self.headers,
@@ -238,6 +244,7 @@ def discover_boards(
     user_agent: str = DEFAULT_USER_AGENT,
     delay_seconds: float = 0.8,
     top_per_board: int = 10,
+    client=None,
 ) -> tuple[list[NovelRecord], list[tuple[str, str]]]:
     """轮询全部板块。单板块失败不拖垮整轮，返回 (records, errors)。"""
 
@@ -251,6 +258,7 @@ def discover_boards(
             board_meta=board,
             timeout=timeout,
             user_agent=user_agent,
+            client=client,
         )
 
         try:
@@ -282,6 +290,7 @@ def discover_all(
     user_agent: str = DEFAULT_USER_AGENT,
     delay_seconds: float = 0.8,
     top_per_board: int = 10,
+    client=None,
 ) -> tuple[list[NovelRecord], list[tuple[str, str]]]:
     boards = all_boards(
         genders=genders, rank_types=rank_types
@@ -292,4 +301,5 @@ def discover_all(
         user_agent=user_agent,
         delay_seconds=delay_seconds,
         top_per_board=top_per_board,
+        client=client,
     )

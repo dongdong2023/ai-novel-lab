@@ -213,6 +213,13 @@ class IngestTest(unittest.TestCase):
                 "第二章内容" * 100, encoding="utf-8"
             )
             (corpus / "cover.png").write_bytes(b"x")
+            # 版权三级验证 L1：目录入库必须带权利声明
+            (corpus / ".rights.json").write_text(
+                '{"rights": "user_provided",'
+                ' "source": "自有语料",'
+                ' "declarant": "tester"}',
+                encoding="utf-8",
+            )
 
             conn = db.connect(root / "t.db")
 

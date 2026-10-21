@@ -24,14 +24,28 @@ from novel_lab.settings import DATA_DIR
 _CN_DIGITS = "零一二三四五六七八九十"
 
 
+def _chapter_no(doc_title: str) -> int:
+    """从文档名提取章节号数值（排序用）；无数字返回 0。"""
+    import re
+
+    m = re.search(r"(\d+)", doc_title or "")
+    return int(m.group(1)) if m else 0
+
+
 def _pretty_doc(doc_title: str) -> str:
-    """'ch2_deai' -> '第二章'；无数字原样返回。"""
+    """'ch2_deai' -> '第二章'；无数字原样返回。
+
+    ≥100 章直接用阿拉伯数字（_CN_DIGITS 拼不出百位，
+    旧实现 n=100 拼成"第十十"、n≥110 直接 IndexError）。
+    """
     import re
 
     m = re.search(r"ch(\d+)", doc_title or "")
     if not m:
         return doc_title
     n = int(m.group(1))
+    if n >= 100:
+        return f"第{n}章"
     if n <= 10:
         cn = _CN_DIGITS[n] if n < 10 else "十"
     elif n < 20:
@@ -56,11 +70,13 @@ def trainable_documents(
         " JOIN novels n ON n.id = d.novel_rowid"
         " WHERE n.title = ?"
         " AND d.rights IN ('authorized','user_provided',"
-        " 'open_license')"
-        " ORDER BY d.title",
+        " 'open_license')",
         (novel_title,),
     ).fetchall()
-    return [dict(r) for r in rows]
+    docs = [dict(r) for r in rows]
+    # 按章节号数值排序（字符串序会把 ch10 排到 ch2 前）
+    docs.sort(key=lambda d: (_chapter_no(d["title"]), d["id"]))
+    return docs
 
 
 def _read_doc(raw_path: str) -> str:
@@ -84,9 +100,13 @@ def load_novel_knowledge(
         " WHERE n.title = ?"
         " AND d.rights IN ('authorized','user_provided',"
         " 'open_license')"
-        " ORDER BY d.title, k.id",
+        " ORDER BY k.id",
         (novel_title,),
     ).fetchall()
+    # 先按 id 稳定排序，再按章节号数值排序（同章保持 id 序）
+    rows = sorted(
+        rows, key=lambda r: _chapter_no(r["doc_title"])
+    )
     out = []
     for r in rows:
         payload = json.loads(r["payload"])
@@ -103,6 +123,8 @@ def load_novel_knowledge(
 
 def samples_qa_appearance(
     knowledge: list[dict],
+    *,
+    novel_title: str = "双月降临",
 ) -> list[dict]:
     """A1 人物出场问答：词典统计（确定性最高）。"""
 
@@ -129,7 +151,7 @@ def samples_qa_appearance(
             {
                 "category": "qa",
                 "instruction": (
-                    f"《双月降临》前20章中，{name}"
+                    f"《{novel_title}》前20章中，{name}"
                     "主要出现在哪些章节？"
                 ),
                 "input": "",
@@ -146,6 +168,8 @@ def samples_qa_appearance(
 
 def samples_qa_relation(
     knowledge: list[dict],
+    *,
+    novel_title: str = "双月降临",
 ) -> list[dict]:
     """A2 关系问答：关系边 + 原文引用作答。"""
 
@@ -165,7 +189,7 @@ def samples_qa_relation(
             {
                 "category": "qa",
                 "instruction": (
-                    f"《双月降临》里，{a}和{b}是什么关系？"
+                    f"《{novel_title}》里，{a}和{b}是什么关系？"
                 ),
                 "input": "",
                 "output": (
@@ -179,7 +203,11 @@ def samples_qa_relation(
     return samples
 
 
-def samples_character(knowledge: list[dict]) -> list[dict]:
+def samples_character(
+    knowledge: list[dict],
+    *,
+    novel_title: str = "双月降临",
+) -> list[dict]:
     """B 人物分析：LLM 抽取的身份/性格 + 原文引用。"""
 
     by_name: dict[str, dict] = {}
@@ -219,7 +247,7 @@ def samples_character(knowledge: list[dict]) -> list[dict]:
             {
                 "category": "character",
                 "instruction": (
-                    f"结合原文，分析《双月降临》中"
+                    f"结合原文，分析《{novel_title}》中"
                     f"{name}的身份与性格。"
                 ),
                 "input": "",
@@ -231,7 +259,11 @@ def samples_character(knowledge: list[dict]) -> list[dict]:
     return samples
 
 
-def samples_plot(knowledge: list[dict]) -> list[dict]:
+def samples_plot(
+    knowledge: list[dict],
+    *,
+    novel_title: str = "双月降临",
+) -> list[dict]:
     """C 剧情理解：事件（起因/经过/结果）+引用。"""
 
     samples = []
@@ -254,7 +286,7 @@ def samples_plot(knowledge: list[dict]) -> list[dict]:
             {
                 "category": "plot",
                 "instruction": (
-                    f"《双月降临》{_pretty_doc(item['_doc'])}里发生了"
+                    f"《{novel_title}》{_pretty_doc(item['_doc'])}里发生了"
                     "什么事？起因和结果是什么？"
                 ),
                 "input": "",
@@ -266,7 +298,11 @@ def samples_plot(knowledge: list[dict]) -> list[dict]:
     return samples
 
 
-def samples_world(knowledge: list[dict]) -> list[dict]:
+def samples_world(
+    knowledge: list[dict],
+    *,
+    novel_title: str = "双月降临",
+) -> list[dict]:
     """D 世界观理解：规则 + 原文依据。"""
 
     samples = []
@@ -284,7 +320,7 @@ def samples_world(knowledge: list[dict]) -> list[dict]:
             {
                 "category": "world",
                 "instruction": (
-                    "《双月降临》的世界观中，"
+                    f"《{novel_title}》的世界观中，"
                     "这条规则的原文依据是什么？"
                 ),
                 "input": rule,
@@ -296,7 +332,11 @@ def samples_world(knowledge: list[dict]) -> list[dict]:
     return samples
 
 
-def samples_summary(knowledge: list[dict]) -> list[dict]:
+def samples_summary(
+    knowledge: list[dict],
+    *,
+    novel_title: str = "双月降临",
+) -> list[dict]:
     """E 章级总结：该章事件聚合为要点列表。"""
 
     by_chapter: dict[str, list[str]] = {}
@@ -319,7 +359,7 @@ def samples_summary(knowledge: list[dict]) -> list[dict]:
             {
                 "category": "summary",
                 "instruction": (
-                    f"概括《双月降临》{_pretty_doc(doc)}的主要情节。"
+                    f"概括《{novel_title}》{_pretty_doc(doc)}的主要情节。"
                 ),
                 "input": "",
                 "output": bullets,
@@ -338,6 +378,7 @@ def samples_writing(
     max_plain: int = 4,
     max_dialogue: int = 8,
     anchor_gap: int = 3,
+    novel_title: str = "双月降临",
 ) -> list[dict]:
     """F 写作任务：自监督续写切片（多切片版）。
 
@@ -364,7 +405,7 @@ def samples_writing(
             "category": "writing",
             "subtype": mode,
             "instruction": (
-                "以下是一部末世小说《双月降临》的片段，"
+                f"以下是一部末世小说《{novel_title}》的片段，"
                 "请以相同文风续写。"
                 + (
                     "下一段从人物对白开始。"
@@ -477,11 +518,15 @@ def build_dataset(
 
     samples = []
     for name, fn in builders.items():
-        part = fn(knowledge)
+        part = fn(knowledge, novel_title=novel_title)
         samples.extend(part)
 
-    samples.extend(samples_writing(docs))
-    samples.extend(samples_continuation_v2(docs))
+    samples.extend(
+        samples_writing(docs, novel_title=novel_title)
+    )
+    samples.extend(
+        samples_continuation_v2(docs, novel_title=novel_title)
+    )
 
     stats = {
         "novel": novel_title,
@@ -652,12 +697,17 @@ def samples_beat_to_prose(
     knowledge: list[dict],
     *,
     max_samples: int = 200,
+    novel_title: str = "双月降临",
 ) -> list[dict]:
     """G1 节拍→正文：input=场景节拍规格，output=原文段落。
 
     模型学的是"给定节拍如何展开成文"，这是写手的核心能力。
     节拍规格从事件知识确定性拼装（地点/人物/冲突来自
     event/world_rule/character 知识条目）。
+
+    目标段落按事件自带的 quote 在原文中定位（P0-1.4）：
+    旧实现按序号盲猜第 2i+1 段，节拍与正文毫无关系；
+    quote 定位不到的事件直接跳过，不硬凑。
     """
 
     # 按章节聚合事件
@@ -668,6 +718,9 @@ def samples_beat_to_prose(
         events_by_doc.setdefault(
             item["_doc"], []
         ).append(item)
+
+    def _norm(s: str) -> str:
+        return "".join(s.split())
 
     samples = []
     for doc in docs:
@@ -682,8 +735,21 @@ def samples_beat_to_prose(
         ]
         if not paragraphs:
             continue
+        normed = [_norm(p) for p in paragraphs]
 
         for i, ev in enumerate(events[:6]):
+            quote = (ev.get("quote") or "").strip()
+            if not quote:
+                continue
+            needle = _norm(quote)
+            target = None
+            for p, np_ in zip(paragraphs, normed):
+                if needle in np_ or np_ in needle:
+                    target = p
+                    break
+            if target is None:
+                # quote 在原文里定位不到 → 跳过该事件
+                continue
             spec = SceneBeatSpec(
                 beat_type=(
                     "hook" if i == 0
@@ -700,12 +766,8 @@ def samples_beat_to_prose(
                 foreshadow=ev.get("effect", ""),
                 source_chapter=doc["title"],
             )
-            # 取原文中段一个段落作目标正文
-            target = paragraphs[
-                min(len(paragraphs) - 1, i * 2 + 1)
-            ]
             prompt = (
-                "以下是《双月降临》的场景节拍规格，"
+                f"以下是《{novel_title}》的场景节拍规格，"
                 "请展开成一段小说正文（200-400字），"
                 "保持原文的克制白描文风：\n"
                 + spec.to_prompt()
@@ -731,6 +793,7 @@ def samples_continuation_v2(
     *,
     min_input: int = 800,
     max_output: int = 500,
+    novel_title: str = "双月降临",
 ) -> list[dict]:
     """G2 续写 v2：v1 的升级版。
 
@@ -790,7 +853,7 @@ def samples_continuation_v2(
                 "category": "writing",
                 "subtype": "continuation_v2",
                 "instruction": (
-                    "以下是《双月降临》的正文片段，"
+                    f"以下是《{novel_title}》的正文片段，"
                     "请以相同文风续写。\n" + hint
                 ),
                 "input": inp_text,
@@ -806,46 +869,40 @@ def samples_continuation_v2(
 def samples_cliffhanger_hook(
     docs: list[dict],
     *,
-    tail_chars: int = 600,
+    novel_title: str = "双月降临",
 ) -> list[dict]:
-    """G3 断章钩子：input=章节末段，output=下一章开头钩子句。
+    """G3 断章钩子：input=章末倒数第 2~4 段，output=最后 1 段。
 
-    训练模型"断章"能力：章末如何留悬念、章首如何接钩子。
+    训练模型"断章"能力：给定章末前文，续写出留悬念的收尾段。
+    旧实现把同一段文本的最后 3 句既当 input 尾巴又当 output，
+    答案完整泄露在输入里（P0-1.4）；新实现 input/output 是
+    不相交的相邻段落，output 不出现在 input 中。
     """
 
     samples = []
     for doc in docs:
         text = _read_doc(doc["raw_path"])
-        if len(text) < tail_chars + 200:
-            continue
-        # 章末 tail_chars 字作 input
-        tail = text[-tail_chars:]
-        # 找最后一个完整段落边界
-        cut = tail.find("\n\n")
-        if cut > 0:
-            tail = tail[cut:].strip()
-        # output：取文本最后 3 句作"钩子"
-        import re
-
-        sentences = re.split(
-            r"(?<=[。！？])", text[-tail_chars:]
-        )
-        sentences = [
-            s.strip() for s in sentences if s.strip()
+        paragraphs = [
+            p.strip()
+            for p in text.split("\n\n")
+            if p.strip()
         ]
-        hook = "".join(sentences[-3:])
-        if len(hook) < 20:
+        if len(paragraphs) < 4:
             continue
+        hook = paragraphs[-1]
+        if len(hook) < 10:
+            continue
+        lead = "\n\n".join(paragraphs[-4:-1])
 
         sample = {
             "category": "writing",
             "subtype": "cliffhanger_hook",
             "instruction": (
-                "以下是《双月降临》某章结尾片段，"
-                "请写出下一章开头的钩子句"
-                "（1-3句，必须承接悬念、抛出新信息）："
+                f"以下是《{novel_title}》某章结尾前的片段，"
+                "请续写本章结尾的断章钩子段"
+                "（必须承接悬念、抛出新信息）："
             ),
-            "input": tail,
+            "input": lead,
             "output": hook,
             **_provenance(doc, hook),
             "knowledge_id": None,
@@ -859,6 +916,7 @@ def samples_dialogue_tension(
     docs: list[dict],
     *,
     max_samples: int = 150,
+    novel_title: str = "双月降临",
 ) -> list[dict]:
     """G4 对白张力：input=场景上下文+人物小传，
     output=带潜台词的对白段落。
@@ -902,7 +960,7 @@ def samples_dialogue_tension(
                 "category": "writing",
                 "subtype": "dialogue_tension",
                 "instruction": (
-                    "以下是《双月降临》的场景上下文，"
+                    f"以下是《{novel_title}》的场景上下文，"
                     "请写出一段人物对白：要求有潜台词、"
                     "有信息差、短句为主，"
                     "不许出现说教式长独白："
@@ -940,13 +998,29 @@ def build_dataset_v2(
 
     samples: list[dict] = []
     samples.extend(
-        samples_beat_to_prose(docs, knowledge)
+        samples_beat_to_prose(
+            docs, knowledge, novel_title=novel_title
+        )
     )
-    samples.extend(samples_continuation_v2(docs))
-    samples.extend(samples_cliffhanger_hook(docs))
-    samples.extend(samples_dialogue_tension(docs))
+    samples.extend(
+        samples_continuation_v2(
+            docs, novel_title=novel_title
+        )
+    )
+    samples.extend(
+        samples_cliffhanger_hook(
+            docs, novel_title=novel_title
+        )
+    )
+    samples.extend(
+        samples_dialogue_tension(
+            docs, novel_title=novel_title
+        )
+    )
     # summary 保留：不是问答，是压缩能力
-    samples.extend(samples_summary(knowledge))
+    samples.extend(
+        samples_summary(knowledge, novel_title=novel_title)
+    )
 
     # v2 样本全部带溯源；补齐 summary 类的溯源字段
     for s in samples:

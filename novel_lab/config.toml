@@ -16,11 +16,11 @@ request_delay_seconds = 0.8
 qidian_enabled = true
 
 [popularity]
-board_weight = 0.15
-read_weight = 0.45
-rank_weight = 0.25
-# 快照 ≥2 期后启用；缺增长率的书该分量权重自动重归
-growth_weight = 0.15
+# v3 四维权重（board/rank/velocity/trend，和为 1），与 popularity.py 对齐
+board_weight = 0.20
+rank_weight = 0.35
+velocity_weight = 0.25
+trend_weight = 0.20
 
 [llm]
 # 本地 sick-cloud 上的 Ollama（qwen3.8:27b-iq3s），经 SSH 隧道转发：

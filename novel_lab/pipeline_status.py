@@ -96,8 +96,8 @@ def pipeline_status(conn: sqlite3.Connection) -> str:
         f"引用非逐字残留: {bad_quotes}"
     )
 
-    # P7/P8 数据集
-    ds_dir = DATA_DIR / "datasets" / "v1"
+    # P7/P8 数据集（默认 v2，与 cli dataset/quality-gate 对齐）
+    ds_dir = DATA_DIR / "datasets" / "v2"
     samples_path = ds_dir / "samples.jsonl"
     if samples_path.is_file():
         samples = [

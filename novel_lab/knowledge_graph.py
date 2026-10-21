@@ -38,10 +38,14 @@ def load_knowledge(
         " FROM knowledge k"
         " JOIN novels n ON n.id = k.novel_rowid"
         " JOIN documents d ON d.id = k.document_id"
-        " WHERE n.title = ?"
-        " ORDER BY d.title",
+        " WHERE n.title = ?",
         (novel_title,),
     ).fetchall()
+    # 按章节号数值排序（字符串排序会让 ch10 排到 ch2 前面）
+    rows = sorted(
+        rows,
+        key=lambda r: (_chapter_no(r["doc_title"]), r["id"]),
+    )
     out = []
     for r in rows:
         payload = json.loads(r["payload"])

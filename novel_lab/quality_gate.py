@@ -51,9 +51,16 @@ def check_format(sample: dict) -> str | None:
 
 
 def check_fact(
-    sample: dict, conn: sqlite3.Connection
+    sample: dict,
+    conn: sqlite3.Connection,
+    novel_title: str | None = None,
 ) -> str | None:
-    """事实一致性：答案必须能在知识库或原文里找到。"""
+    """事实一致性：答案必须能在知识库或原文里找到。
+
+    novel_title 给出时，原文查询按书名+文档名联合过滤，
+    避免两本书有同名文档时串书（P1-2.3）；不给时退回旧的
+    按文档名查询（兼容直接调用）。
+    """
 
     category = sample.get("category")
     output = sample.get("output", "")
@@ -74,12 +81,14 @@ def check_fact(
 
     # 出场次数问答：数字必须与知识库重算一致
     if category == "qa" and "共提及" in output:
-        m_name = re.search(
-            r"《双月降临》前20章中，(.+?)主要出现", sample["instruction"]
+        m_qa = re.search(
+            r"《(.+?)》前\d+章中，(.+?)主要出现",
+            sample["instruction"],
         )
         m_num = re.search(r"共提及(\d+)次", output)
-        if m_name and m_num:
-            name = m_name.group(1)
+        if m_qa and m_num:
+            book_title = novel_title or m_qa.group(1)
+            name = m_qa.group(2)
             claimed = int(m_num.group(1))
             real = conn.execute(
                 "SELECT COALESCE(SUM(json_extract(payload,"
@@ -91,25 +100,65 @@ def check_fact(
                 " AND json_extract(payload,'$.name')=?"
                 " AND d.rights IN ('authorized',"
                 " 'user_provided','open_license')",
-                ("双月降临", STATS_EXTRACTOR, name),
+                (book_title, STATS_EXTRACTOR, name),
             ).fetchone()["n"]
             if real != claimed:
                 return f"提及次数不符(claim={claimed},real={real})"
 
-    # 写作切片：output 首段必须紧跟 input 末段（原文连续性）
+    # 写作样本：按 subtype 分策略校验（P0-1.4）——v1 无
+    # subtype 的续写切片与 continuation_v2/dialogue_tension
+    # 校验段落连续性；beat_to_prose 的 input 是节拍规格不是
+    # 正文，只能校验 output 是原文真实段落；cliffhanger_hook
+    # 校验 output 段落在 input 末段之后且不与 input 重叠。
     if category == "writing":
-        doc_row = conn.execute(
-            "SELECT raw_path FROM documents WHERE title=?",
-            (sample.get("source_doc", ""),),
-        ).fetchone()
+        if novel_title:
+            doc_row = conn.execute(
+                "SELECT d.raw_path FROM documents d"
+                " JOIN novels nv ON nv.id = d.novel_rowid"
+                " WHERE nv.title=? AND d.title=?",
+                (
+                    novel_title,
+                    sample.get("source_doc", ""),
+                ),
+            ).fetchone()
+        else:
+            doc_row = conn.execute(
+                "SELECT raw_path FROM documents"
+                " WHERE title=?",
+                (sample.get("source_doc", ""),),
+            ).fetchone()
         if doc_row is None:
             return "来源文档不存在"
         text = _read_doc(doc_row["raw_path"])
         paras = _paragraphs(text)
         in_tail = _paragraphs(sample.get("input", ""))
         out_head = _paragraphs(output)
-        if not in_tail or not out_head:
+        if not out_head:
             return "切片为空"
+
+        subtype = sample.get("subtype")
+
+        if subtype == "beat_to_prose":
+            # output 必须逐段是原文真实段落
+            for p in out_head:
+                if p not in paras:
+                    return "output段落不在原文"
+            return None
+
+        if not in_tail:
+            return "切片为空"
+
+        if subtype == "cliffhanger_hook":
+            # input 末段定位后，output 首段必须在其后出现
+            try:
+                i = paras.index(in_tail[-1])
+            except ValueError:
+                return "切片段落不在原文"
+            rest = paras[i + 1:]
+            if out_head[0] not in rest:
+                return "钩子段不在原文input之后"
+            return None
+
         try:
             i = paras.index(in_tail[-1])
             j = paras.index(out_head[0])
@@ -178,7 +227,7 @@ def run_gate(
                     seen_head.add(head_key)
 
         if reason is None:
-            fact = check_fact(sample, conn)
+            fact = check_fact(sample, conn, novel_title)
             if fact:
                 reason = f"事实:{fact}"
 

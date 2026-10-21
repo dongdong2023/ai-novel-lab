@@ -117,7 +117,9 @@ def popularity_scores(
         raw_velocity.append(base * _velocity_boost(r))
     velocity_norm = minmax(raw_velocity)
 
-    # trend：TrendScore 归一
+    # trend：TrendScore 按平台分组归一（read_count 语义随平台
+    # 不同：番茄=在读、起点=月票/新粉，全局 minmax 会让小量纲
+    # 平台全军覆没——P1-2.1）
     raw_trend = [
         trend_score(
             r.get("max_read") or 0,
@@ -125,7 +127,15 @@ def popularity_scores(
         )
         for r in rows
     ]
-    trend_norm = minmax(raw_trend)
+    trend_by_platform: dict[str, list[float]] = {}
+    for r, value in zip(rows, raw_trend):
+        trend_by_platform.setdefault(
+            r.get("platform") or "", []
+        ).append(value)
+    trend_norms = {
+        platform: minmax(values)
+        for platform, values in trend_by_platform.items()
+    }
 
     for row in rows:
         parts: list[tuple[float, float]] = [
@@ -153,7 +163,9 @@ def popularity_scores(
                 velocity_weight,
             ),
             (
-                trend_norm.get(
+                trend_norms.get(
+                    row.get("platform") or "", {}
+                ).get(
                     trend_score(
                         row.get("max_read") or 0,
                         row.get("word_count"),

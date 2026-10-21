@@ -23,12 +23,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 # L2 盗版水印/广告关键词（命中即 BLOCK）
+# 注意："手机版""最新章节"单独出现是都市正文的正常词，不入
+# 字面词表，收紧为下方组合正则特征（P1-2.5）。
 PIRACY_WATERMARKS = [
     "笔趣阁",
-    "最新章节",
     "请访问",
-    "无弹窗",
-    "手机版",
     "看书网",
     "顶点小说",
     "八一中文",
@@ -41,6 +40,18 @@ PIRACY_WATERMARKS = [
 
 _WATERMARK_RES = [
     re.compile(re.escape(w)) for w in PIRACY_WATERMARKS
+]
+
+# L2 组合特征：盗版站广告语境（关键词 + 广告动词/名词相邻）
+_WATERMARK_PATTERNS = [
+    (
+        re.compile(r"最新章节.{0,10}(全文|无弹窗|阅读)"),
+        "最新章节+全文/无弹窗/阅读",
+    ),
+    (
+        re.compile(r"手机版.{0,10}(阅读|小说|看书|下载)"),
+        "手机版+阅读/小说/看书/下载",
+    ),
 ]
 
 # L3 已知商业书名（示例种子；生产可从榜单数据扩展）
@@ -69,8 +80,13 @@ class VerifyResult:
 
 def verify_rights_declaration(
     directory: Path,
+    expected_rights: str | None = None,
 ) -> VerifyResult:
-    """L1：.rights.json 签名声明检查。"""
+    """L1：.rights.json 签名声明检查。
+
+    expected_rights 非空时，声明的 rights 必须与调用方传入的
+    rights 一致，防止声明一类、入库标另一类。
+    """
     decl = directory / ".rights.json"
     if not decl.exists():
         return VerifyResult(
@@ -106,6 +122,16 @@ def verify_rights_declaration(
             reason=f"rights 类型非法: {rights!r}",
             detail="只允许 user_provided/authorized/open_license",
         )
+    if expected_rights and rights != expected_rights:
+        return VerifyResult(
+            passed=False,
+            level_failed=1,
+            reason=(
+                f"声明 rights({rights}) 与入库 rights"
+                f"({expected_rights}) 不一致"
+            ),
+            detail=".rights.json 的 rights 必须与入库参数一致",
+        )
     if not data.get("declarant"):
         return VerifyResult(
             passed=False,
@@ -126,6 +152,14 @@ def verify_no_piracy_watermark(text: str) -> VerifyResult:
                 passed=False,
                 level_failed=2,
                 reason=f"检测到盗版水印: {word}",
+                detail="文本疑似来自盗版站点，已 BLOCK，拒绝入库",
+            )
+    for pattern, label in _WATERMARK_PATTERNS:
+        if pattern.search(text):
+            return VerifyResult(
+                passed=False,
+                level_failed=2,
+                reason=f"检测到盗版水印组合特征: {label}",
                 detail="文本疑似来自盗版站点，已 BLOCK，拒绝入库",
             )
     return VerifyResult(passed=True)
@@ -161,7 +195,9 @@ def verify_document(
 ) -> VerifyResult:
     """三级验证流水线：L1 → L2 → L3，任一失败即返回。"""
     for check in (
-        lambda: verify_rights_declaration(directory),
+        lambda: verify_rights_declaration(
+            directory, expected_rights=rights
+        ),
         lambda: verify_no_piracy_watermark(text),
         lambda: verify_title_crosscheck(
             text, rights, title_hint

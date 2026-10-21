@@ -52,7 +52,22 @@ def build_knowledge_graph_pack(
 
     knowledge = load_knowledge(conn, novel_title)
     characters = character_index(knowledge)
-    edges = relationship_edges(knowledge)
+    edges = relationship_edges(knowledge, characters)
+
+    # character_index 的 chapters/sources 是 set，JSON 序列化前
+    # 转成排序 list；identities/traits 去重保序（P0-1.2）
+    serializable_chars = {
+        name: {
+            **info,
+            "chapters": sorted(info["chapters"]),
+            "sources": sorted(info["sources"]),
+            "identities": list(
+                dict.fromkeys(info["identities"])
+            ),
+            "traits": list(dict.fromkeys(info["traits"])),
+        }
+        for name, info in characters.items()
+    }
 
     world_rules = [
         {
@@ -77,7 +92,7 @@ def build_knowledge_graph_pack(
 
     return {
         "novel": novel_title,
-        "characters": characters,
+        "characters": serializable_chars,
         "relationships": edges,
         "world_rules": world_rules,
         "events": events,
@@ -103,10 +118,15 @@ def build_tropes_and_beats_pack(
         " FROM knowledge k"
         " JOIN documents d ON d.id = k.document_id"
         " JOIN novels n ON n.id = k.novel_rowid"
-        " WHERE n.title = ? AND k.kind = ?"
-        " ORDER BY d.title",
+        " WHERE n.title = ? AND k.kind = ?",
         (novel_title, "narrative_dynamics"),
     ).fetchall()
+    # 按章节号数值排序，避免 ch10 排到 ch2 前面
+    from novel_lab.knowledge_graph import _chapter_no
+
+    rows = sorted(
+        rows, key=lambda r: _chapter_no(r["doc_title"])
+    )
 
     chapters = []
     hook_counter: dict[str, int] = {}
@@ -168,6 +188,11 @@ def build_style_profile_pack(
             "novel": novel_title,
             "chapters_covered": 0,
             "style": {},
+            # 跨仓兼容字段（P1-2.6）：无数据时给 0，
+            # 避免消费方读到缺失键
+            "dialogue_ratio": 0,
+            "sentence_length_mean_of_files": 0,
+            "paragraph_length_median_of_files": 0,
         }
 
     def _mean(key: str) -> float:
@@ -178,21 +203,48 @@ def build_style_profile_pack(
         ]
         return round(sum(vals) / len(vals), 2) if vals else 0
 
+    def _median(key: str) -> float:
+        import statistics
+
+        vals = sorted(
+            f.get(key, 0)
+            for f in facts
+            if isinstance(f.get(key), (int, float))
+        )
+        return (
+            round(statistics.median(vals), 2) if vals else 0
+        )
+
+    style = {
+        "sentence_length_mean": _mean(
+            "sentence_length_mean"
+        ),
+        "paragraph_length_mean": _mean(
+            "paragraph_length_mean"
+        ),
+        "dialogue_ratio_mean": _mean("dialogue_ratio"),
+        "chinese_chars_total": sum(
+            f.get("chinese_chars", 0) for f in facts
+        ),
+    }
+
     return {
         "novel": novel_title,
         "chapters_covered": len(facts),
-        "style": {
-            "sentence_length_mean": _mean(
-                "sentence_length_mean"
-            ),
-            "paragraph_length_mean": _mean(
-                "paragraph_length_mean"
-            ),
-            "dialogue_ratio_mean": _mean("dialogue_ratio"),
-            "chinese_chars_total": sum(
-                f.get("chinese_chars", 0) for f in facts
-            ),
-        },
+        "style": style,
+        # 跨仓兼容字段（P1-2.6）：webnovel-house-style 的
+        # compare_style_profile.py 读顶层字段，与本仓的
+        # sentence_length_mean_of_files 等键名对齐。
+        # paragraph 中位数口径：各章 paragraph_length_mean
+        # 的中位数（style_fact 只存了章级均值，这是最接近
+        # 的等价口径）。
+        "dialogue_ratio": style["dialogue_ratio_mean"],
+        "sentence_length_mean_of_files": style[
+            "sentence_length_mean"
+        ],
+        "paragraph_length_median_of_files": _median(
+            "paragraph_length_mean"
+        ),
     }
 
 

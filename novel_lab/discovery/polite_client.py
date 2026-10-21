@@ -52,6 +52,7 @@ ALLOWED_DOMAINS = frozenset(
         "www.fanqienovel.com",
         "www.qidian.com",
         "book.qidian.com",
+        "m.qidian.com",
     }
 )
 
@@ -100,8 +101,19 @@ class PoliteClient:
             rp = RobotFileParser()
             rp.set_url(f"https://{domain}/robots.txt")
             try:
-                rp.read()
-            except Exception:
+                # 用带浏览器 UA 的 session 拉取（rp.read() 走
+                # urllib 默认 UA，会被番茄 CDN 拦截）；404 视为
+                # 无 robots 约束，允许抓取。
+                resp = self.session.get(
+                    rp.url, timeout=self.timeout
+                )
+                if resp.status_code == 404:
+                    rp.parse([])
+                elif resp.ok:
+                    rp.parse(resp.text.splitlines())
+                else:
+                    rp = None
+            except requests.RequestException:
                 # robots.txt 不可达 → 按最严格处理：拒绝
                 rp = None
             self._robots[domain] = rp

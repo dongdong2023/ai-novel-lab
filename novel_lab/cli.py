@@ -22,20 +22,41 @@ def _scored_rows(conn, config):
     growth = db.latest_growth(conn)
     for row in rows:
         row["growth_rate"] = growth.get(row["novel_rowid"])
+    pop_cfg = config["popularity"]
     return popularity.popularity_scores(
         rows,
-        board_weight=config["popularity"]["board_weight"],
-        read_weight=config["popularity"]["read_weight"],
-        rank_weight=config["popularity"]["rank_weight"],
-        growth_weight=config["popularity"].get(
-            "growth_weight", 0.0
+        board_weight=pop_cfg.get(
+            "board_weight", popularity.W_BOARD
         ),
+        rank_weight=pop_cfg.get(
+            "rank_weight", popularity.W_RANK
+        ),
+        velocity_weight=pop_cfg.get(
+            "velocity_weight", popularity.W_VELOCITY
+        ),
+        trend_weight=pop_cfg.get(
+            "trend_weight", popularity.W_TREND
+        ),
+    )
+
+
+def _make_polite_client(config: dict):
+    """榜单/书页抓取统一走 PoliteClient（robots/缓存/限流/退避）。"""
+    from novel_lab.discovery.polite_client import (
+        PoliteClient,
+    )
+
+    return PoliteClient(
+        cache_dir=DATA_DIR / "http_cache",
+        user_agent=config["research"]["user_agent"],
+        timeout=config["research"]["request_timeout"],
     )
 
 
 def cmd_discover(config: dict) -> None:
 
     discovery_cfg = config["discovery"]
+    client = _make_polite_client(config)
 
     records, errors = discover_fanqie(
         genders=discovery_cfg.get("genders"),
@@ -46,6 +67,7 @@ def cmd_discover(config: dict) -> None:
             "request_delay_seconds", 0.8
         ),
         top_per_board=discovery_cfg.get("top_per_board", 10),
+        client=client,
     )
 
     platform_counts = {"fanqie": len(records)}
@@ -55,6 +77,7 @@ def cmd_discover(config: dict) -> None:
         qd_records, qd_errors = discover_qidian(
             timeout=config["research"]["request_timeout"],
             user_agent=config["research"]["user_agent"],
+            client=client,
         )
         records = fanqie_records + qd_records
         errors = errors + qd_errors
@@ -137,6 +160,7 @@ def cmd_collect(config: dict, top: int, platform: str | None) -> None:
         ]
 
     store_dir = DATA_DIR / "documents"
+    client = _make_polite_client(config)
 
     created = dup = failed = 0
 
@@ -149,6 +173,7 @@ def cmd_collect(config: dict, top: int, platform: str | None) -> None:
                     "request_timeout"
                 ],
                 user_agent=config["research"]["user_agent"],
+                client=client,
             )
             _, status = ingest_profile(
                 conn, profile, store_dir
@@ -195,8 +220,11 @@ def cmd_ingest(
 
     print(
         f"[PASS] created={stats['created']} "
-        f"duplicates={stats['duplicates']}"
+        f"duplicates={stats['duplicates']} "
+        f"rejected={stats.get('rejected', 0)}"
     )
+    for title, reason in stats.get("rejections", []):
+        print(f"  [REJECT] {title}: {reason}")
     print(
         f"documents: {document_stats(conn)} | "
         f"可训练语料: {training_ready(conn)}"
@@ -421,14 +449,40 @@ def cmd_gaps(
         print(f"[{f['rule']}] {f['who']}：{f['detail']}")
 
 
-def cmd_dataset(config: dict, novel_title: str) -> None:
+def cmd_dataset(
+    config: dict, novel_title: str, version: str = "v2"
+) -> None:
+
+    conn = db.connect()
+    if version == "v2":
+        from novel_lab.dataset_factory import (
+            build_dataset_v2,
+            write_dataset_v2,
+        )
+
+        samples, stats = build_dataset_v2(
+            conn, novel_title
+        )
+        conn.close()
+        path = write_dataset_v2(samples, stats)
+        print(
+            f"[PASS] 数据集 v2 样本 {stats['total']} 条 "
+            f"(可训练文档 {stats['trainable_docs']} 份/"
+            f"知识 {stats['knowledge_used']} 条)"
+        )
+        for cat, n in sorted(
+            stats["by_subtype"].items(),
+            key=lambda x: -x[1],
+        ):
+            print(f"  {cat}: {n}")
+        print(path)
+        return
 
     from novel_lab.dataset_factory import (
         build_dataset,
         write_dataset,
     )
 
-    conn = db.connect()
     samples, stats = build_dataset(conn, novel_title)
     conn.close()
 
@@ -446,7 +500,9 @@ def cmd_dataset(config: dict, novel_title: str) -> None:
     print(path)
 
 
-def cmd_quality_gate(config: dict, novel_title: str) -> None:
+def cmd_quality_gate(
+    config: dict, novel_title: str, version: str = "v2"
+) -> None:
 
     import json
 
@@ -457,7 +513,8 @@ def cmd_quality_gate(config: dict, novel_title: str) -> None:
     )
     from novel_lab.settings import DATA_DIR
 
-    samples_path = DATA_DIR / "datasets" / "v1" / "samples.jsonl"
+    ds_dir = DATA_DIR / "datasets" / version
+    samples_path = ds_dir / "samples.jsonl"
     samples = [
         json.loads(line)
         for line in samples_path.read_text(
@@ -472,7 +529,7 @@ def cmd_quality_gate(config: dict, novel_title: str) -> None:
     conn.close()
 
     splits = split_dataset(kept)
-    out_dir = write_split(splits, report)
+    out_dir = write_split(splits, report, out_dir=ds_dir)
 
     print(
         f"[PASS] 总数 {report['total']} | 保留 {report['kept']}"
@@ -589,14 +646,26 @@ def main() -> None:
     )
 
     dataset = sub.add_parser(
-        "dataset", help="生成训练数据集（六类样本）"
+        "dataset", help="生成训练数据集（默认 v2 写作样本）"
     )
     dataset.add_argument("--novel-title", required=True)
+    dataset.add_argument(
+        "--version",
+        choices=["v1", "v2"],
+        default="v2",
+        help="数据集版本（默认 v2）",
+    )
 
     gate = sub.add_parser(
         "quality-gate", help="数据集质检+切分 train/val/test"
     )
     gate.add_argument("--novel-title", required=True)
+    gate.add_argument(
+        "--version",
+        choices=["v1", "v2"],
+        default="v2",
+        help="质检的数据集版本（默认 v2）",
+    )
 
     export_lf = sub.add_parser(
         "export-lf", help="导出 LLaMA-Factory 训练包"
@@ -644,9 +713,13 @@ def main() -> None:
     elif args.command == "gaps":
         cmd_gaps(config, args.novel_title, args.llm)
     elif args.command == "dataset":
-        cmd_dataset(config, args.novel_title)
+        cmd_dataset(
+            config, args.novel_title, args.version
+        )
     elif args.command == "quality-gate":
-        cmd_quality_gate(config, args.novel_title)
+        cmd_quality_gate(
+            config, args.novel_title, args.version
+        )
     elif args.command == "export-lf":
         from novel_lab.export_llamafactory import (
             export_llamafactory,
