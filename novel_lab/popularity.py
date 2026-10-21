@@ -77,11 +77,12 @@ def trend_score(heat: float, word_count: int | float | None) -> float:
 
 def _velocity_boost(row: dict) -> float:
     """飙升/新书榜的 velocity 加权。"""
-    board_name = (
-        row.get("board_name")
-        or row.get("board")
-        or row.get("rank_type")
-        or ""
+    # board 存的是板块代码（如 "1_1_751"），"新书榜"等字样在
+    # rank_type 里；用 or 链会在 board 非空时短路、永远读不到
+    # rank_type，故拼接三字段一起匹配（Gemini 复核 P1-2.1）。
+    board_name = " ".join(
+        str(row.get(k) or "")
+        for k in ("board_name", "board", "rank_type")
     )
     for kw in VELOCITY_BOOST_BOARDS:
         if kw in board_name:
